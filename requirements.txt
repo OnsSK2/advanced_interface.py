@@ -2,5 +2,9 @@ streamlit
 pandas
 numpy
 folium
+streamlit_folium
+simplekml
+openpyxl
+matplotlib
 openrouteservice
-pyngrok
+geopy
