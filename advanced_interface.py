@@ -55,19 +55,8 @@ if 'ors_key' not in st.session_state:
     st.session_state.ors_key = ""
 if 'ors_visualization' not in st.session_state:
     st.session_state.ors_visualization = None
-if 'segment_speeds' not in st.session_state:
-    st.session_state.segment_speeds = {}  # To store speeds between segments
-if 'station_service_times' not in st.session_state:
-    st.session_state.station_service_times = {}  # To store service times per station
-
-# ADD THESE LINES TO FIX THE ERROR:
-if 'default_speed' not in st.session_state:
-    st.session_state.default_speed = 40  # Default speed in km/h
-if 'default_service_time' not in st.session_state:
-    st.session_state.default_service_time = 2  # Default service time in minutes
 if 'school_arrival_time' not in st.session_state:
     st.session_state.school_arrival_time = "08:00"
-
 
 # Color palette
 route_colors = [
@@ -238,7 +227,9 @@ def sweep_fixed_buses(data, available_buses):
                 'route': optimized,
                 'capacity_used': current_capacity,
                 'bus_capacity': bus_cap,
-                'distance': calculate_route_distance(optimized)
+                'distance': calculate_route_distance(optimized),
+                'default_speed': 40,  # Default speed for new routes
+                'default_service_time': 2  # Default service time for new routes
             })
 
     # Second pass - completely independent re-optimization
@@ -295,7 +286,9 @@ def sweep_fixed_buses(data, available_buses):
                         'route': optimized,
                         'capacity_used': current_capacity,
                         'bus_capacity': bus_cap,
-                        'distance': calculate_route_distance(optimized)
+                        'distance': calculate_route_distance(optimized),
+                        'default_speed': 40,  # Default speed for new routes
+                        'default_service_time': 2  # Default service time for new routes
                     })
 
             routes.extend(additional_routes)
@@ -384,7 +377,9 @@ def apply_manual_overrides(override_df, original_data, bus_capacities):
                 'route': route_df,
                 'capacity_used': capacity_used,
                 'bus_capacity': bus_capacity,
-                'distance': distance
+                'distance': distance,
+                'default_speed': 40,  # Default speed for new routes
+                'default_service_time': 2  # Default service time for new routes
             })
 
         return new_routes if new_routes else None
@@ -393,7 +388,6 @@ def apply_manual_overrides(override_df, original_data, bus_capacities):
         return None
 
 def clean_coordinates(coords):
-
     unique_coords = []
     seen = set()
     for coord in coords:
@@ -404,7 +398,6 @@ def clean_coordinates(coords):
     return unique_coords
 
 def is_detour_unnecessary(prev_point, current_point, next_point, threshold_km=0.2):
-
     prev = (prev_point[1], prev_point[0])
     curr = (current_point[1], current_point[0])
     nxt = (next_point[1], next_point[0])
@@ -414,7 +407,6 @@ def is_detour_unnecessary(prev_point, current_point, next_point, threshold_km=0.
     return (dist_via - dist_direct) > threshold_km
 
 def generate_ors_visualization(routes, ors_key):
-
     try:
         client = openrouteservice.Client(key=ors_key)
 
@@ -423,22 +415,16 @@ def generate_ors_visualization(routes, ors_key):
             coords = []
             # Add depot as starting point
             coords.append([st.session_state.depot_lon, st.session_state.depot_lat])
-            # Add route points
+
+            # Add route points in their optimized order
             for _, row in route['route'].iterrows():
                 coords.append([row['Longitude'], row['Latitude']])
+
             # Add depot as ending point
             coords.append([st.session_state.depot_lon, st.session_state.depot_lat])
 
-            if len(coords) < 3:
-                cleaned_clusters.append(clean_coordinates(coords))
-                continue
-
-            cleaned = [coords[0]]
-            for i in range(1, len(coords) - 1):
-                if not is_detour_unnecessary(coords[i - 1], coords[i], coords[i + 1]):
-                    cleaned.append(coords[i])
-            cleaned.append(coords[-1])
-            cleaned_clusters.append(clean_coordinates(cleaned))
+            # Store the original coordinates before any cleaning
+            cleaned_clusters.append(coords.copy())
 
         # Create map centered on depot
         m = folium.Map(location=[st.session_state.depot_lat, st.session_state.depot_lon], zoom_start=12)
@@ -451,15 +437,16 @@ def generate_ors_visualization(routes, ors_key):
 
         # Process each route
         for i, coords in enumerate(cleaned_clusters):
-            if not coords or len(coords) < 2:
+            if len(coords) < 2:
                 continue
 
             try:
+                # Use optimize_waypoints=False to maintain our optimized order
                 route = client.directions(
                     coordinates=coords,
                     profile='driving-car',
                     format='geojson',
-                    optimize_waypoints=True,
+                    optimize_waypoints=False,  # This is the key change
                     instructions=True
                 )
 
@@ -472,7 +459,8 @@ def generate_ors_visualization(routes, ors_key):
                 route_details.append({
                     'route_number': i+1,
                     'distance_km': distance,
-                    'duration_min': duration
+                    'duration_min': duration,
+                    'num_stations': len(coords)-2  # Subtract depot points
                 })
 
                 folium.GeoJson(
@@ -493,11 +481,11 @@ def generate_ors_visualization(routes, ors_key):
                         icon=folium.Icon(color='black', icon='warehouse')
                     ).add_to(m)
 
-                # Add station markers
+                # Add station markers in order
                 for j, point in enumerate(coords[1:-1]):
                     folium.CircleMarker(
                         location=[point[1], point[0]],
-                        radius=4,
+                        radius=6,
                         color=colors[i % len(colors)],
                         fill=True,
                         fill_color=colors[i % len(colors)],
@@ -578,14 +566,13 @@ def load_data(uploaded_file):
         st.error(f"Error loading file: {str(e)}")
         return None, None, 0
 
-def calculate_route_timing_with_speeds(route_df, route_idx):
-
+def calculate_route_timing_with_speeds(route_df, route_idx, route_speed, route_service_time):
     timing_details = []
 
     # Calculate departure time based on school arrival time
-    total_route_time = calculate_total_route_time(route_df)
+    total_route_time = calculate_total_route_time(route_df, route_speed, route_service_time)
     try:
-        arrival_dt = datetime.strptime("08:00", "%H:%M")
+        arrival_dt = datetime.strptime(st.session_state.school_arrival_time, "%H:%M")
         departure_dt = arrival_dt - timedelta(minutes=total_route_time)
         current_time = departure_dt
     except:
@@ -607,36 +594,28 @@ def calculate_route_timing_with_speeds(route_df, route_idx):
         station_name = point['Nom']
         station_designation = point['designation station']
 
-        # Get service time for this station
-        service_time = st.session_state.station_service_times.get(station_designation, st.session_state.default_service_time)
-
-        # Calculate distance and speed for this segment
+        # Calculate distance for this segment
         if i == 0:
             # From depot to first station
             distance = haversine_distance(
                 st.session_state.depot_lat, st.session_state.depot_lon,
                 point['Latitude'], point['Longitude']
             )
-            segment_key = f"depot_to_{station_designation}"
         else:
             # From previous station to current station
             distance = haversine_distance(
                 prev_point['Latitude'], prev_point['Longitude'],
                 point['Latitude'], point['Longitude']
             )
-            segment_key = f"{prev_point['designation station']}_to_{station_designation}"
 
-        # Get speed for this segment
-        speed = st.session_state.segment_speeds.get(segment_key, st.session_state.default_speed)
-
-        # Calculate travel time in minutes
-        travel_time = (distance / speed) * 60 if speed > 0 else 0
+        # Calculate travel time in minutes using route speed
+        travel_time = (distance / route_speed) * 60 if route_speed > 0 else 0
 
         # Arrival time is departure from previous + travel time
         arrival_time = current_time + timedelta(minutes=travel_time)
 
-        # Departure time is arrival time + service time
-        departure_time = arrival_time + timedelta(minutes=service_time)
+        # Departure time is arrival time + route service time
+        departure_time = arrival_time + timedelta(minutes=route_service_time)
 
         timing_details.append({
             'station_name': station_name,
@@ -658,9 +637,7 @@ def calculate_route_timing_with_speeds(route_df, route_idx):
             last_point['Latitude'], last_point['Longitude'],
             st.session_state.depot_lat, st.session_state.depot_lon
         )
-        segment_key = f"{last_point['designation station']}_to_depot"
-        speed = st.session_state.segment_speeds.get(segment_key, st.session_state.default_speed)
-        travel_time = (distance / speed) * 60 if speed > 0 else 0
+        travel_time = (distance / route_speed) * 60 if route_speed > 0 else 0
         arrival_time = current_time + timedelta(minutes=travel_time)
 
         timing_details.append({
@@ -675,17 +652,13 @@ def calculate_route_timing_with_speeds(route_df, route_idx):
 
     return pd.DataFrame(timing_details)
 
-def calculate_total_route_time(route_df):
-
+def calculate_total_route_time(route_df, route_speed, route_service_time):
     total_time = 0
     prev_point = None
 
     for i, (_, point) in enumerate(route_df.iterrows()):
-        station_designation = point['designation station']
-
         # Add service time
-        service_time = st.session_state.station_service_times.get(station_designation, st.session_state.default_service_time)
-        total_time += service_time
+        total_time += route_service_time
 
         # Add travel time
         if i == 0:
@@ -694,17 +667,14 @@ def calculate_total_route_time(route_df):
                 st.session_state.depot_lat, st.session_state.depot_lon,
                 point['Latitude'], point['Longitude']
             )
-            segment_key = f"depot_to_{station_designation}"
         else:
             # From previous station to current station
             distance = haversine_distance(
                 prev_point['Latitude'], prev_point['Longitude'],
                 point['Latitude'], point['Longitude']
             )
-            segment_key = f"{prev_point['designation station']}_to_{station_designation}"
 
-        speed = st.session_state.segment_speeds.get(segment_key, st.session_state.default_speed)
-        travel_time = (distance / speed) * 60 if speed > 0 else 0
+        travel_time = (distance / route_speed) * 60 if route_speed > 0 else 0
         total_time += travel_time
 
         prev_point = point
@@ -716,12 +686,11 @@ def calculate_total_route_time(route_df):
             last_point['Latitude'], last_point['Longitude'],
             st.session_state.depot_lat, st.session_state.depot_lon
         )
-        segment_key = f"{last_point['designation station']}_to_depot"
-        speed = st.session_state.segment_speeds.get(segment_key, st.session_state.default_speed)
-        travel_time = (distance / speed) * 60 if speed > 0 else 0
+        travel_time = (distance / route_speed) * 60 if route_speed > 0 else 0
         total_time += travel_time
 
     return total_time
+
 def create_individual_route_map(route_df, route_num):
     if route_df.empty:
         return None
@@ -808,6 +777,8 @@ with st.sidebar:
     bus_capacities_str = st.text_input("Bus Capacities (comma separated)", "28")
     st.session_state.bus_capacities = [int(cap.strip()) for cap in bus_capacities_str.split(",") if cap.strip().isdigit()]
 
+    st.header("Timing Parameters")
+    st.session_state.school_arrival_time = st.text_input("Arrival Time (HH:MM)", value="08:00")
 
     if st.button("Run Optimization") and station_file:
         st.session_state.optimized = True
@@ -941,7 +912,40 @@ if station_file:
                         st.markdown(html_content, unsafe_allow_html=True)
 
                     with col2:
-                        total_route_time = calculate_total_route_time(route['route'])
+                        # Get current route parameters
+                        current_speed = route.get('default_speed', 40)
+                        current_service_time = route.get('default_service_time', 2)
+
+                        # Create input fields
+                        new_speed = st.number_input(
+                            f"Speed for Route {i} (km/h)",
+                            min_value=10,
+                            max_value=100,
+                            value=current_speed,
+                            key=f"speed_{i}"
+                        )
+
+                        new_service_time = st.number_input(
+                            f"Service Time for Route {i} (min)",
+                            min_value=1,
+                            max_value=10,
+                            value=current_service_time,
+                            key=f"service_{i}"
+                        )
+
+                        # Update values if changed
+                        if new_speed != current_speed:
+                            route['default_speed'] = new_speed
+                        if new_service_time != current_service_time:
+                            route['default_service_time'] = new_service_time
+
+                        # Calculate with current parameters
+                        total_route_time = calculate_total_route_time(
+                            route['route'],
+                            route['default_speed'],
+                            route['default_service_time']
+                        )
+
                         html_content = f'''
                         <div style="background-color:#f0f2f6;padding:20px;border-radius:10px;">
                             <h3 style="color:#2b5876;margin-top:0;">Distance & Time</h3>
@@ -951,8 +955,6 @@ if station_file:
                         </div>
                         '''
                         st.markdown(html_content, unsafe_allow_html=True)
-
-                    st.markdown("### Route Map Visualization")
 
                     # Get the route dataframe
                     route_df = route['route'].copy()
@@ -967,94 +969,20 @@ if station_file:
                         folium_static(single_route_map, width=700, height=400)
                     else:
                         st.warning("Could not generate map for this route")
-                    st.markdown("**Segment Speeds and Service Times**")
-
-                    # Default speed and service time configuration
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        new_default_speed = st.number_input(
-                            f"Default Speed for Route {i} (km/h)",
-                            min_value=10, max_value=100,
-                            value=st.session_state.default_speed,
-                            key=f"default_speed_{i}"
-                        )
-
-                    with col2:
-                        new_default_service = st.number_input(
-                            f"Default Service Time for Route {i} (min)",
-                            min_value=1, max_value=10,
-                            value=st.session_state.default_service_time,
-                            key=f"default_service_{i}"
-                        )
-
-                    # Segment speed inputs
-                    st.markdown("**Segment Speeds (km/h):**")
-                    route_df = route['route']
-
-                    # Depot to first station
-                    if len(route_df) > 0:
-                        first_station_name = route_df.iloc[0]['Nom']
-                        first_station_designation = route_df.iloc[0]['designation station']
-                        segment_key = f"depot_to_{first_station_designation}"
-                        current_speed = st.session_state.segment_speeds.get(segment_key, new_default_speed)
-                        new_speed = st.number_input(
-                            f"Depot to {first_station_designation}",  # Show name in UI
-                            min_value=10, max_value=100, value=current_speed,
-                            key=f"speed_{segment_key}"  # Use designation in key
-                        )
-                        st.session_state.segment_speeds[segment_key] = new_speed
-
-                    # Between stations
-                    for j in range(len(route_df)-1):
-                        from_station_name = route_df.iloc[j]['Nom']
-                        to_station_name = route_df.iloc[j+1]['Nom']
-                        from_designation = route_df.iloc[j]['designation station']
-                        to_designation = route_df.iloc[j+1]['designation station']
-                        segment_key = f"{from_designation}_to_{to_designation}"
-                        current_speed = st.session_state.segment_speeds.get(segment_key, new_default_speed)
-                        new_speed = st.number_input(
-                            f"{from_designation} to {to_designation}",  # Show names in UI
-                            min_value=10, max_value=100, value=current_speed,
-                            key=f"speed_{segment_key}"  # Use designations in key
-                        )
-                        st.session_state.segment_speeds[segment_key] = new_speed
-
-
-                    # Last station to depot
-                    if len(route_df) > 0:
-                        last_station_name = route_df.iloc[-1]['Nom']
-                        last_station_designation = route_df.iloc[-1]['designation station']
-                        segment_key = f"{last_station_designation}_to_depot"
-                        current_speed = st.session_state.segment_speeds.get(segment_key, new_default_speed)
-                        new_speed = st.number_input(
-                            f"{last_station_designation} to Depot",  # Show name in UI
-                            min_value=10, max_value=100, value=current_speed,
-                            key=f"speed_{segment_key}"  # Use designation in key
-                        )
-                        st.session_state.segment_speeds[segment_key] = new_speed
-                    # Station service time inputs
-                    st.markdown("**Station Service Times (minutes):**")
-                    cols = st.columns(3)
-                    for j, (_, station) in enumerate(route_df.iterrows()):
-                        station_name = station['Nom']
-                        station_designation = station['designation station']
-                        current_service = st.session_state.station_service_times.get(station_designation, new_default_service)
-                        new_service = cols[j%3].number_input(
-                            f"{station_designation}",  # Show name in UI
-                            min_value=1, max_value=10, value=current_service,
-                            key=f"service_{station_designation}"  # Use designation in key
-                        )
-                        st.session_state.station_service_times[station_designation] = new_service
 
                     # Calculate and display timing
-                    timing_df = calculate_route_timing_with_speeds(route['route'], i)
+                    timing_df = calculate_route_timing_with_speeds(
+                        route['route'],
+                        i,
+                        route['default_speed'],
+                        route['default_service_time']
+                    )
                     st.markdown("**Detailed Timing Schedule:**")
                     st.dataframe(timing_df.style.format({
                         'latitude': '{:.6f}',
                         'longitude': '{:.6f}',
                         'passengers': '{:.0f}'  # Format as integer with 0 decimal places
                     }))
-
 
                     # Export options
                     st.markdown("**Export Station Data:**")
@@ -1187,7 +1115,7 @@ else:
 
 # Authenticate ngrok
 from pyngrok import ngrok
-ngrok.set_auth_token("2l23Qv46hemr0QDyTDqp302OMCd_6a4vAdh3X7fsUmdYkrWr2")
+ngrok.set_auth_token("22l23Qv46hemr0QDyTDqp302OMCd_6a4vAdh3X7fsUmdYkrWr2")
 
 
 # Start ngrok tunnel
@@ -1202,7 +1130,7 @@ except Exception as e:
     print("\n❌ Failed to create Ngrok tunnel. Error:", str(e))
     print("\nTroubleshooting steps:")
     print("1. Check Streamlit logs:")
+    
     print("\n2. Try these commands manually:")
     print("!streamlit run bus_optimizer.py --server.port 8501")
     print("!ngrok http 8501")
-
