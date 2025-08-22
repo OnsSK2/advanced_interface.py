@@ -1123,7 +1123,7 @@ elif not station_file:
     st.info("Please upload the station data file to begin optimization")
 else:
     st.info("Configure parameters and click 'Run Optimization'")
-""")
+
 
 # Authenticate ngrok
 from pyngrok import ngrok
@@ -1148,3 +1148,4 @@ except Exception as e:
     print("\n2. Try these commands manually:")
     print("!streamlit run bus_optimizer.py --server.port 8501")
     print("!ngrok http 8501")
+
