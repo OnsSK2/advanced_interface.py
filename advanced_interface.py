@@ -1129,8 +1129,6 @@ else:
 from pyngrok import ngrok
 ngrok.set_auth_token("2y9Tc8cZWp1rkE3zBWnsvWAotQh_3xDPfMyFW2dbHYwFymsaE")
 
-# Launch Streamlit
-get_ipython().system_raw('streamlit run bus_optimizer.py --server.port 8501 --server.headless true &')
 
 # Start ngrok tunnel
 import time
@@ -1144,8 +1142,7 @@ except Exception as e:
     print("\n❌ Failed to create Ngrok tunnel. Error:", str(e))
     print("\nTroubleshooting steps:")
     print("1. Check Streamlit logs:")
-    !cat /content/streamlit.log 2>/dev/null || echo "No log file found"
+  
     print("\n2. Try these commands manually:")
     print("!streamlit run bus_optimizer.py --server.port 8501")
     print("!ngrok http 8501")
-
