@@ -76,20 +76,31 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 def calculate_route_distance(route):
+    if route.empty:
+        return 0
+
     total_distance = 0
+
+    # Calculer les distances entre toutes les stations (sans le dépôt)
     for i in range(len(route) - 1):
         total_distance += haversine_distance(
-            route.iloc[i]['Latitude'], route.iloc[i]['Longitude'],
-            route.iloc[i+1]['Latitude'], route.iloc[i+1]['Longitude'])
+            route.iloc[i]['lattitude'], route.iloc[i]['longitude'],
+            route.iloc[i+1]['lattitude'], route.iloc[i+1]['longitude']
+        )
+
+    # Ajouter la distance de la dernière station au dépôt
     if len(route) > 0:
         last = route.iloc[-1]
-        total_distance += haversine_distance(last['Latitude'], last['Longitude'],
-                                           st.session_state.depot_lat, st.session_state.depot_lon)
+        total_distance += haversine_distance(
+            last['lattitude'], last['longitude'],
+            st.session_state.depot_lat, st.session_state.depot_lon
+        )
+
     return total_distance
 
 # Improved nearest neighbor algorithm with depot proximity consideration
 def find_nearest_station(current_station, remaining_stations):
-    current_coords = (current_station['Latitude'], current_station['Longitude'])
+    current_coords = (current_station['lattitude'], current_station['longitude'])
     current_to_depot = haversine_distance(current_coords[0], current_coords[1],
                                         st.session_state.depot_lat, st.session_state.depot_lon)
 
@@ -99,9 +110,9 @@ def find_nearest_station(current_station, remaining_stations):
     for _, station in remaining_stations.iterrows():
         # Distance to next station
         dist_to_station = haversine_distance(current_coords[0], current_coords[1],
-                                           station['Latitude'], station['Longitude'])
+                                           station['lattitude'], station['longitude'])
         # Distance from next station to depot
-        dist_to_depot = haversine_distance(station['Latitude'], station['Longitude'],
+        dist_to_depot = haversine_distance(station['lattitude'], station['longitude'],
                                          st.session_state.depot_lat, st.session_state.depot_lon)
 
         # Weighted score (60% distance to station, 40% reduction in depot distance)
@@ -129,15 +140,15 @@ def two_opt_swap(route_df, neighborhood_size=3):
                     continue  # No point swapping adjacent points
 
                 # Calculate the distance change without full recomputation
-                old_dist = (haversine_distance(best_route.iloc[i-1]['Latitude'], best_route.iloc[i-1]['Longitude'],
-                                             best_route.iloc[i]['Latitude'], best_route.iloc[i]['Longitude']) +
-                          haversine_distance(best_route.iloc[j]['Latitude'], best_route.iloc[j]['Longitude'],
-                                           best_route.iloc[j+1]['Latitude'], best_route.iloc[j+1]['Longitude']))
+                old_dist = (haversine_distance(best_route.iloc[i-1]['lattitude'], best_route.iloc[i-1]['longitude'],
+                                             best_route.iloc[i]['lattitude'], best_route.iloc[i]['longitude']) +
+                          haversine_distance(best_route.iloc[j]['lattitude'], best_route.iloc[j]['longitude'],
+                                           best_route.iloc[j+1]['lattitude'], best_route.iloc[j+1]['longitude']))
 
-                new_dist = (haversine_distance(best_route.iloc[i-1]['Latitude'], best_route.iloc[i-1]['Longitude'],
-                                             best_route.iloc[j]['Latitude'], best_route.iloc[j]['Longitude']) +
-                          haversine_distance(best_route.iloc[i]['Latitude'], best_route.iloc[i]['Longitude'],
-                                           best_route.iloc[j+1]['Latitude'], best_route.iloc[j+1]['Longitude']))
+                new_dist = (haversine_distance(best_route.iloc[i-1]['lattitude'], best_route.iloc[i-1]['longitude'],
+                                             best_route.iloc[j]['lattitude'], best_route.iloc[j]['longitude']) +
+                          haversine_distance(best_route.iloc[i]['lattitude'], best_route.iloc[i]['longitude'],
+                                           best_route.iloc[j+1]['lattitude'], best_route.iloc[j+1]['longitude']))
 
                 if new_dist < old_dist:
                     # Create new route by reversing the segment between i and j
@@ -212,7 +223,7 @@ def sweep_fixed_buses(data, available_buses):
         current_capacity = 0
 
         while idx < len(data_copy):
-            demand = data_copy.loc[idx, 'Description']
+            demand = data_copy.loc[idx, 'employees number']
             if current_capacity + demand <= bus_cap:
                 current_route.append(data_copy.loc[idx])
                 current_capacity += demand
@@ -228,27 +239,26 @@ def sweep_fixed_buses(data, available_buses):
                 'capacity_used': current_capacity,
                 'bus_capacity': bus_cap,
                 'distance': calculate_route_distance(optimized),
-                'default_speed': 40,  # Default speed for new routes
-                'default_service_time': 2  # Default service time for new routes
+                'default_speed': 40,  # Ajouter cette ligne
+                'default_service_time': 2  # Ajouter cette ligne
             })
 
     # Second pass - completely independent re-optimization
     if idx < len(data_copy):
         remaining_stations = data_copy.iloc[idx:].copy()
 
-
         # 1. Prepare fresh data for isolated optimization
         remaining_stations[['theta', 'distance']] = remaining_stations.apply(
             lambda row: polar_coordinates(row), axis=1)
         remaining_stations = remaining_stations.sort_values('theta')
         remaining_stations['distance_from_depot'] = remaining_stations.apply(
-            lambda row: haversine_distance(row['Latitude'], row['Longitude'],
+            lambda row: haversine_distance(row['lattitude'], row['longitude'],
                                         st.session_state.depot_lat, st.session_state.depot_lon),
             axis=1
         )
 
         # 2. Calculate fresh bus requirements
-        remaining_demand = remaining_stations['Description'].sum()
+        remaining_demand = remaining_stations['employees number'].sum()
         new_buses = []
 
         # Calculate using same logic as initial optimization
@@ -271,7 +281,7 @@ def sweep_fixed_buses(data, available_buses):
                 current_capacity = 0
 
                 while reopt_idx < len(remaining_stations):
-                    demand = remaining_stations.iloc[reopt_idx]['Description']
+                    demand = remaining_stations.iloc[reopt_idx]['employees number']
                     if current_capacity + demand <= bus_cap:
                         current_route.append(remaining_stations.iloc[reopt_idx])
                         current_capacity += demand
@@ -287,12 +297,11 @@ def sweep_fixed_buses(data, available_buses):
                         'capacity_used': current_capacity,
                         'bus_capacity': bus_cap,
                         'distance': calculate_route_distance(optimized),
-                        'default_speed': 40,  # Default speed for new routes
-                        'default_service_time': 2  # Default service time for new routes
+                        'default_speed': 40,  # Ajouter cette ligne
+                        'default_service_time': 2  # Ajouter cette ligne
                     })
 
             routes.extend(additional_routes)
-
 
     return routes
 
@@ -304,15 +313,15 @@ def clean_data(data):
     cleaned = data.copy()
 
     # Remove rows with missing coordinates
-    cleaned = cleaned.dropna(subset=['Latitude', 'Longitude'])
+    cleaned = cleaned.dropna(subset=['lattitude', 'longitude'])
 
     # Remove rows where Description is 0 or non-numeric
-    cleaned = cleaned[pd.to_numeric(cleaned['Description'], errors='coerce').notnull()]
-    cleaned['Description'] = cleaned['Description'].astype(float)
-    cleaned = cleaned[cleaned['Description'] > 0]
+    cleaned = cleaned[pd.to_numeric(cleaned['employees number'], errors='coerce').notnull()]
+    cleaned['employees number'] = cleaned['employees number'].astype(float)
+    cleaned = cleaned[cleaned['employees number'] > 0]
 
     # Remove duplicate stations (same coordinates)
-    cleaned = cleaned.drop_duplicates(subset=['Latitude', 'Longitude'])
+    cleaned = cleaned.drop_duplicates(subset=['lattitude', 'longitude'])
 
     removed_count = original_count - len(cleaned)
     removed_data = data[~data.index.isin(cleaned.index)]
@@ -326,12 +335,12 @@ def generate_override_template(routes):
             route_df = route['route']
             for i, (_, station) in enumerate(route_df.iterrows(), 1):
                 template_data.append({
-                    'station_name': station['Nom'],
-                    'station_designation': station['designation station'],
+                    'station name': station['station name'],
+                    'station number': station['station number'],
                     'required_route': route_idx,
-                    'latitude': station['Latitude'],
-                    'longitude': station['Longitude'],
-                    'passengers': station['Description'],
+                    'lattitude': station['lattitude'],
+                    'longitude': station['longitude'],
+                    'employees number': station['employees number'],
                     'order_in_route': i
                 })
         return pd.DataFrame(template_data)
@@ -341,7 +350,7 @@ def generate_override_template(routes):
 
 def apply_manual_overrides(override_df, original_data, bus_capacities):
     try:
-        required_columns = ['station_name', 'required_route', 'order_in_route']
+        required_columns = ['station name', 'required_route', 'order_in_route']
         if not all(col in override_df.columns for col in required_columns):
             st.error("Override file missing required columns")
             return None
@@ -355,14 +364,14 @@ def apply_manual_overrides(override_df, original_data, bus_capacities):
             capacity_used = 0
 
             for _, row in group_sorted.iterrows():
-                station_match = original_data[original_data['Nom'] == row['station_name']]
+                station_match = original_data[original_data['station name'] == row['station name']]
                 if len(station_match) == 0:
-                    st.error(f"Station {row['station_name']} not found in original data")
+                    st.error(f"Station {row['station name']} not found in original data")
                     continue
 
                 station_data = station_match.iloc[0]
                 route_stations.append(station_data)
-                capacity_used += station_data['Description']
+                capacity_used += station_data['employees number']
 
             if not route_stations:
                 continue
@@ -413,40 +422,42 @@ def generate_ors_visualization(routes, ors_key):
         cleaned_clusters = []
         for route in routes:
             coords = []
-            # Add depot as starting point
+
+            # Commencer par la première station (pas le dépôt)
+            first_station = route['route'].iloc[0]
+            coords.append([first_station['longitude'], first_station['lattitude']])
+
+            # Ajouter les autres stations dans l'ordre optimisé
+            for _, row in route['route'].iloc[1:].iterrows():
+                coords.append([row['longitude'], row['lattitude']])
+
+            # Terminer par le dépôt
             coords.append([st.session_state.depot_lon, st.session_state.depot_lat])
 
-            # Add route points in their optimized order
-            for _, row in route['route'].iterrows():
-                coords.append([row['Longitude'], row['Latitude']])
-
-            # Add depot as ending point
-            coords.append([st.session_state.depot_lon, st.session_state.depot_lat])
-
-            # Store the original coordinates before any cleaning
+            # Stocker les coordonnées nettoyées
             cleaned_clusters.append(coords.copy())
 
-        # Create map centered on depot
+        # Créer la carte centrée sur le dépôt
         m = folium.Map(location=[st.session_state.depot_lat, st.session_state.depot_lon], zoom_start=12)
         total_distance = 0
         successful_routes = 0
         route_details = []
 
-        # Colors for routes
+        # Couleurs pour les routes
         colors = ['blue', 'purple', 'orange', 'darkred', 'cadetblue', 'green', 'pink', 'gray']
 
-        # Process each route
+        # Traiter chaque route
         for i, coords in enumerate(cleaned_clusters):
             if len(coords) < 2:
                 continue
 
             try:
-                # Use optimize_waypoints=False to maintain our optimized order
+                # Utiliser optimize_waypoints=False pour maintenir notre ordre optimisé
                 route = client.directions(
                     coordinates=coords,
                     profile='driving-car',
                     format='geojson',
-                    optimize_waypoints=False,  # This is the key change
+                    optimize_waypoints=False,  # Ceci est le changement clé
                     instructions=True
                 )
 
@@ -460,7 +471,7 @@ def generate_ors_visualization(routes, ors_key):
                     'route_number': i+1,
                     'distance_km': distance,
                     'duration_min': duration,
-                    'num_stations': len(coords)-2  # Subtract depot points
+                    'num_stations': len(coords)-1  # Soustraire le point de dépôt final
                 })
 
                 folium.GeoJson(
@@ -473,7 +484,7 @@ def generate_ors_visualization(routes, ors_key):
                     }
                 ).add_to(m)
 
-                # Add depot marker
+                # Ajouter le marqueur du dépôt (seulement une fois)
                 if i == 0:
                     folium.Marker(
                         [st.session_state.depot_lat, st.session_state.depot_lon],
@@ -481,8 +492,8 @@ def generate_ors_visualization(routes, ors_key):
                         icon=folium.Icon(color='black', icon='warehouse')
                     ).add_to(m)
 
-                # Add station markers in order
-                for j, point in enumerate(coords[1:-1]):
+                # Ajouter les marqueurs des stations dans l'ordre
+                for j, point in enumerate(coords[:-1]):  # Exclure le point de dépôt final
                     folium.CircleMarker(
                         location=[point[1], point[0]],
                         radius=6,
@@ -493,7 +504,7 @@ def generate_ors_visualization(routes, ors_key):
                         popup=f'Stop {j+1} (Route {i+1})'
                     ).add_to(m)
 
-                time.sleep(1)  # Respect API rate limits
+                time.sleep(1)  # Respecter les limites de débit de l'API
 
             except Exception as e:
                 st.error(f"Error processing Route {i+1}: {str(e)}")
@@ -522,15 +533,15 @@ def create_kml(route_df, route_num):
     depot.style.iconstyle.icon.href = 'http://maps.google.com/mapfiles/kml/pal4/icon57.png'
 
     for _, row in route_df.iterrows():
-        pnt = kml.newpoint(name=row['Nom'],
-                          description=f"Designation: {row['designation station']}\\nPassengers: {row['Description']}",
-                          coords=[(row['Longitude'], row['Latitude'])])
+        pnt = kml.newpoint(name=row['station name'],
+                          description=f"Designation: {row['station number']}\\nemployees number: {row['employees number']}",
+                          coords=[(row['longitude'], row['lattitude'])])
         pnt.style.iconstyle.icon.href = 'http://maps.google.com/mapfiles/kml/pal4/icon49.png'
 
     if len(route_df) > 0:
         first_station = route_df.iloc[0]
-        coords = [(first_station['Longitude'], first_station['Latitude'])]
-        coords.extend([(row['Longitude'], row['Latitude']) for _, row in route_df.iterrows()])
+        coords = [(first_station['longitude'], first_station['lattitude'])]
+        coords.extend([(row['longitude'], row['lattitude']) for _, row in route_df.iterrows()])
         coords.append((st.session_state.depot_lon, st.session_state.depot_lat))
 
         linestring = kml.newlinestring(name=f"Route {route_num}")
@@ -581,8 +592,8 @@ def calculate_route_timing_with_speeds(route_df, route_idx, route_speed, route_s
     # Add depot departure
     timing_details.append({
         'station_name': "Depot",
-        'station_designation': "Depot",
-        'latitude': st.session_state.depot_lat,
+        'station_number': "Depot",
+        'lattitude': st.session_state.depot_lat,
         'longitude': st.session_state.depot_lon,
         'passengers': 0,
         'arrival_time': current_time.strftime("%H:%M"),
@@ -591,21 +602,22 @@ def calculate_route_timing_with_speeds(route_df, route_idx, route_speed, route_s
 
     prev_point = None
     for i, (_, point) in enumerate(route_df.iterrows()):
-        station_name = point['Nom']
-        station_designation = point['designation station']
+        # Correction des noms de variables avec espaces
+        station_name = point['station name']
+        station_number = point['station number']
 
         # Calculate distance for this segment
         if i == 0:
             # From depot to first station
             distance = haversine_distance(
                 st.session_state.depot_lat, st.session_state.depot_lon,
-                point['Latitude'], point['Longitude']
+                point['lattitude'], point['longitude']
             )
         else:
             # From previous station to current station
             distance = haversine_distance(
-                prev_point['Latitude'], prev_point['Longitude'],
-                point['Latitude'], point['Longitude']
+                prev_point['lattitude'], prev_point['longitude'],
+                point['lattitude'], point['longitude']
             )
 
         # Calculate travel time in minutes using route speed
@@ -619,10 +631,10 @@ def calculate_route_timing_with_speeds(route_df, route_idx, route_speed, route_s
 
         timing_details.append({
             'station_name': station_name,
-            'station_designation': station_designation,
-            'latitude': point['Latitude'],
-            'longitude': point['Longitude'],
-            'passengers': int(point['Description']),
+            'station_number': station_number,
+            'lattitude': point['lattitude'],
+            'longitude': point['longitude'],
+            'passengers': int(point['employees number']),
             'arrival_time': arrival_time.strftime("%H:%M"),
             'departure_time': departure_time.strftime("%H:%M")
         })
@@ -634,7 +646,7 @@ def calculate_route_timing_with_speeds(route_df, route_idx, route_speed, route_s
     if len(route_df) > 0:
         last_point = route_df.iloc[-1]
         distance = haversine_distance(
-            last_point['Latitude'], last_point['Longitude'],
+            last_point['lattitude'], last_point['longitude'],
             st.session_state.depot_lat, st.session_state.depot_lon
         )
         travel_time = (distance / route_speed) * 60 if route_speed > 0 else 0
@@ -642,8 +654,8 @@ def calculate_route_timing_with_speeds(route_df, route_idx, route_speed, route_s
 
         timing_details.append({
             'station_name': "Depot",
-            'station_designation': "Depot",
-            'latitude': st.session_state.depot_lat,
+            'station_number': "Depot",
+            'lattitude': st.session_state.depot_lat,
             'longitude': st.session_state.depot_lon,
             'passengers': 0,
             'arrival_time': arrival_time.strftime("%H:%M"),
@@ -665,13 +677,13 @@ def calculate_total_route_time(route_df, route_speed, route_service_time):
             # From depot to first station
             distance = haversine_distance(
                 st.session_state.depot_lat, st.session_state.depot_lon,
-                point['Latitude'], point['Longitude']
+                point['lattitude'], point['longitude']
             )
         else:
             # From previous station to current station
             distance = haversine_distance(
-                prev_point['Latitude'], prev_point['Longitude'],
-                point['Latitude'], point['Longitude']
+                prev_point['lattitude'], prev_point['longitude'],
+                point['lattitude'], point['longitude']
             )
 
         travel_time = (distance / route_speed) * 60 if route_speed > 0 else 0
@@ -683,7 +695,7 @@ def calculate_total_route_time(route_df, route_speed, route_service_time):
     if len(route_df) > 0:
         last_point = route_df.iloc[-1]
         distance = haversine_distance(
-            last_point['Latitude'], last_point['Longitude'],
+            last_point['lattitude'], last_point['longitude'],
             st.session_state.depot_lat, st.session_state.depot_lon
         )
         travel_time = (distance / route_speed) * 60 if route_speed > 0 else 0
@@ -698,7 +710,7 @@ def create_individual_route_map(route_df, route_num):
     # Create map centered on first station
     first_stop = route_df.iloc[0]
     m = folium.Map(
-        location=[first_stop['Latitude'], first_stop['Longitude']],
+        location=[first_stop['lattitude'], first_stop['longitude']],
         zoom_start=14,
         tiles='OpenStreetMap'
     )
@@ -714,16 +726,16 @@ def create_individual_route_map(route_df, route_num):
     route_coords = []
 
     # 1. Start at first station
-    route_coords.append([first_stop['Latitude'], first_stop['Longitude']])
+    route_coords.append([first_stop['lattitude'], first_stop['longitude']])
 
     # 2. Add remaining stations
     for idx, row in route_df.iloc[1:].iterrows():
-        route_coords.append([row['Latitude'], row['Longitude']])
+        route_coords.append([row['lattitude'], row['longitude']])
 
         # Add station marker (BLUE)
         folium.Marker(
-            [row['Latitude'], row['Longitude']],
-            popup=f"{row['Nom']} (Stop {idx+1})",
+            [row['lattitude'], row['longitude']],
+            popup=f"{row['station name']} (Stop {idx+1})",
             icon=folium.Icon(color='blue', icon='bus', prefix='fa')
         ).add_to(m)
 
@@ -741,16 +753,16 @@ def create_individual_route_map(route_df, route_num):
 
     # Highlight first station differently (GREEN)
     folium.Marker(
-        [first_stop['Latitude'], first_stop['Longitude']],
-        popup=f"START: {first_stop['Nom']}",
+        [first_stop['lattitude'], first_stop['longitude']],
+        popup=f"START: {first_stop['station name']}",
         icon=folium.Icon(color='green', icon='play', prefix='fa')
     ).add_to(m)
 
     return m
 
 def polar_coordinates(row):
-    dx = (row['Longitude'] - st.session_state.depot_lon) * 111.320 * cos(radians(row['Latitude']))
-    dy = (row['Latitude'] - st.session_state.depot_lat) * 110.574
+    dx = (row['longitude'] - st.session_state.depot_lon) * 111.320 * cos(radians(row['lattitude']))
+    dy = (row['lattitude'] - st.session_state.depot_lat) * 110.574
     theta = np.arctan2(dy, dx)
     theta = theta if theta >= 0 else theta + 2 * np.pi
     return pd.Series({'theta': theta, 'distance': sqrt(dx**2 + dy**2)})
@@ -801,7 +813,7 @@ if station_file:
 
         # Show data cleaning results
         if removed_count > 0:
-            st.warning(f"Removed {removed_count} invalid rows (missing coordinates or zero passengers)")
+            st.warning(f"Removed {removed_count} invalid rows (missing coordinates or zero employees number)")
             with st.expander("Show removed rows"):
                 st.dataframe(removed_data)
 
@@ -810,7 +822,7 @@ if station_file:
         data_sorted[['theta', 'distance']] = data_sorted.apply(polar_coordinates, axis=1)
         data_sorted = data_sorted.sort_values('theta').reset_index(drop=True)
         data_sorted['distance_from_depot'] = data_sorted.apply(
-            lambda row: haversine_distance(row['Latitude'], row['Longitude'],
+            lambda row: haversine_distance(row['lattitude'], row['longitude'],
                                           st.session_state.depot_lat, st.session_state.depot_lon),
             axis=1
         )
@@ -818,7 +830,7 @@ if station_file:
         # Perform optimization if needed
         if st.session_state.optimized and not st.session_state.manual_override:
            with st.spinner("Processing routes..."):
-                available_buses = compute_required_buses(data_sorted['Description'], st.session_state.bus_capacities)
+                available_buses = compute_required_buses(data_sorted['employees number'], st.session_state.bus_capacities)
                 routes = sweep_fixed_buses(data_sorted, available_buses)
                 st.session_state.routes = routes
 
@@ -853,15 +865,15 @@ if station_file:
             marker_cluster = MarkerCluster().add_to(m)
             for _, row in cleaned_data.iterrows():
                 folium.Marker(
-                    [row['Latitude'], row['Longitude']],
-                    popup=f"<b>{row['Nom']}</b><br>Demand: {row['Description']}",
+                    [row['lattitude'], row['longitude']],
+                    popup=f"<b>{row['station name']}</b><br>Demand: {row['employees number']}",
                     icon=folium.Icon(color='gray', icon='bus', prefix='fa')
                 ).add_to(marker_cluster)
 
             for i, route in enumerate(st.session_state.routes):
                 color = route_colors[i % len(route_colors)]
                 route_df = route['route']
-                route_coords = [[row['Latitude'], row['Longitude']] for _, row in route_df.iterrows()]
+                route_coords = [[row['lattitude'], row['longitude']] for _, row in route_df.iterrows()]
                 route_coords.append([st.session_state.depot_lat, st.session_state.depot_lon])
 
                 folium.PolyLine(
@@ -875,8 +887,8 @@ if station_file:
 
                 for j, (_, point) in enumerate(route_df.iterrows(), 1):
                     folium.Marker(
-                        [point['Latitude'], point['Longitude']],
-                        popup=f"<b>Route {i+1}, Stop {j}</b><br>{point['Nom']}<br>Demand: {point['Description']}",
+                        [point['lattitude'], point['longitude']],
+                        popup=f"<b>Route {i+1}, Stop {j}</b><br>{point['station name']}<br>Demand: {point['employees number']}",
                         icon=folium.Icon(color=color, icon='info-sign')
                     ).add_to(m)
 
@@ -904,8 +916,8 @@ if station_file:
                         html_content = f'''
                         <div style="background-color:#f0f2f6;padding:20px;border-radius:10px;">
                             <h3 style="color:#2b5876;margin-top:0;">Route {i} Statistics</h3>
-                            <p style="font-size:18px;margin-bottom:5px;"><strong>Bus Capacity:</strong> {route['bus_capacity']} passengers</p>
-                            <p style="font-size:18px;margin-bottom:5px;"><strong>Passengers Assigned:</strong> {route['capacity_used']}</p>
+                            <p style="font-size:18px;margin-bottom:5px;"><strong>Bus Capacity:</strong> {route['bus_capacity']} employees number</p>
+                            <p style="font-size:18px;margin-bottom:5px;"><strong>employees number Assigned:</strong> {route['capacity_used']}</p>
                             <p style="font-size:18px;margin-bottom:5px;"><strong>Filling Rate:</strong> {filling_rate:.1f}%</p>
                         </div>
                         '''
@@ -960,8 +972,8 @@ if station_file:
                     route_df = route['route'].copy()
 
                     # Ensure coordinates are float type
-                    route_df['Latitude'] = route_df['Latitude'].astype(float)
-                    route_df['Longitude'] = route_df['Longitude'].astype(float)
+                    route_df['lattitude'] = route_df['lattitude'].astype(float)
+                    route_df['longitude'] = route_df['longitude'].astype(float)
 
                     # Display the map
                     single_route_map = create_individual_route_map(route_df, i)
@@ -979,9 +991,9 @@ if station_file:
                     )
                     st.markdown("**Detailed Timing Schedule:**")
                     st.dataframe(timing_df.style.format({
-                        'latitude': '{:.6f}',
+                        'lattitude': '{:.6f}',
                         'longitude': '{:.6f}',
-                        'passengers': '{:.0f}'  # Format as integer with 0 decimal places
+                        'employees number': '{:.0f}'  # Format as integer with 0 decimal places
                     }))
 
                     # Export options
@@ -1111,12 +1123,14 @@ elif not station_file:
     st.info("Please upload the station data file to begin optimization")
 else:
     st.info("Configure parameters and click 'Run Optimization'")
-
+""")
 
 # Authenticate ngrok
 from pyngrok import ngrok
-ngrok.set_auth_token("22l23Qv46hemr0QDyTDqp302OMCd_6a4vAdh3X7fsUmdYkrWr2")
+ngrok.set_auth_token("2y9Tc8cZWp1rkE3zBWnsvWAotQh_3xDPfMyFW2dbHYwFymsaE")
 
+# Launch Streamlit
+get_ipython().system_raw('streamlit run bus_optimizer.py --server.port 8501 --server.headless true &')
 
 # Start ngrok tunnel
 import time
@@ -1130,7 +1144,7 @@ except Exception as e:
     print("\n❌ Failed to create Ngrok tunnel. Error:", str(e))
     print("\nTroubleshooting steps:")
     print("1. Check Streamlit logs:")
-    
+    !cat /content/streamlit.log 2>/dev/null || echo "No log file found"
     print("\n2. Try these commands manually:")
     print("!streamlit run bus_optimizer.py --server.port 8501")
     print("!ngrok http 8501")
