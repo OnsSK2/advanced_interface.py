@@ -124,7 +124,8 @@ def find_nearest_station(current_station, remaining_stations):
 
     return nearest
 
-def two_opt_swap(route_df, neighborhood_size=3):
+def two_opt_swap(route_df, route_capacity, neighborhood_size=3):
+
     if len(route_df) < 4:
         return route_df
 
@@ -137,9 +138,9 @@ def two_opt_swap(route_df, neighborhood_size=3):
         for i in range(1, len(best_route)-2):
             for j in range(i+1, min(i+neighborhood_size+1, len(best_route)-1)):
                 if j - i == 1:
-                    continue  # No point swapping adjacent points
+                    continue  # Éviter les swaps adjacents inutiles
 
-                # Calculate the distance change without full recomputation
+                # Calcul delta de distance (optimisation)
                 old_dist = (haversine_distance(best_route.iloc[i-1]['lattitude'], best_route.iloc[i-1]['longitude'],
                                              best_route.iloc[i]['lattitude'], best_route.iloc[i]['longitude']) +
                           haversine_distance(best_route.iloc[j]['lattitude'], best_route.iloc[j]['longitude'],
@@ -151,23 +152,25 @@ def two_opt_swap(route_df, neighborhood_size=3):
                                            best_route.iloc[j+1]['lattitude'], best_route.iloc[j+1]['longitude']))
 
                 if new_dist < old_dist:
-                    # Create new route by reversing the segment between i and j
+                    # Créer nouvelle route par inversion du segment
                     new_route = pd.concat([
                         best_route.iloc[:i],
                         best_route.iloc[i:j+1].iloc[::-1],
                         best_route.iloc[j+1:]
-                    ])
+                    ]).reset_index(drop=True)
 
+                    # VÉRIFICATION CAPACITÉ POUR VRP
+                    # (mêmes stations, ordre différent donc même capacité totale)
                     best_route = new_route
                     best_distance = best_distance - old_dist + new_dist
                     improved = True
-                    break  # Restart the search after improvement
+                    break
             if improved:
                 break
 
     return best_route
 
-def optimize_cluster_order(cluster_df):
+def optimize_cluster_order(cluster_df, bus_capacity):
     if cluster_df.empty:
         return cluster_df
 
@@ -181,9 +184,9 @@ def optimize_cluster_order(cluster_df):
         route.append(nearest)
         remaining = remaining.drop(nearest.name)
 
-    # apply 2-opt optimization
+    # Apply 2-opt optimization with capacity parameter
     optimized_route = pd.DataFrame(route)
-    optimized_route = two_opt_swap(optimized_route, neighborhood_size=3)
+    optimized_route = two_opt_swap(optimized_route, bus_capacity, neighborhood_size=3)
 
     return optimized_route
 
@@ -212,12 +215,150 @@ def compute_required_buses(demands, capacities):
 
     return buses
 
+def inter_route_relocation(routes, max_iterations=20):
+
+    if len(routes) < 2:
+        return routes
+
+    improved = True
+    iteration = 0
+
+    while improved and iteration < max_iterations:
+        improved = False
+        iteration += 1
+
+        # Essayer des échanges entre routes consécutives
+        for i in range(len(routes) - 1):
+            route1 = routes[i]
+            route2 = routes[i + 1]
+
+            # Essayer de déplacer des stations de route1 vers route2
+            for station_idx in range(len(route1['route'])):
+                station = route1['route'].iloc[station_idx]
+
+                # Vérifier si le déplacement est bénéfique
+                original_distance1 = route1['distance']
+                original_distance2 = route2['distance']
+
+                # Créer nouvelle route1 sans la station
+                new_route1_df = route1['route'].drop(route1['route'].index[station_idx]).reset_index(drop=True)
+                new_capacity1 = route1['capacity_used'] - station['employees number']
+
+                # Créer nouvelle route2 avec la station ajoutée
+                new_route2_df = pd.concat([route2['route'], pd.DataFrame([station])], ignore_index=True)
+                new_capacity2 = route2['capacity_used'] + station['employees number']
+
+                # Vérifier contraintes de capacité VRP
+                if (new_capacity1 <= route1['bus_capacity'] and
+                    new_capacity2 <= route2['bus_capacity'] and
+                    new_capacity1 >= route1['bus_capacity'] * 0.5 and  # Remplissage minimal 50%
+                    new_capacity2 >= route2['bus_capacity'] * 0.5):
+
+                    # Optimiser les deux routes
+                    optimized_route1 = optimize_cluster_order(new_route1_df, route1['bus_capacity'])
+                    optimized_route2 = optimize_cluster_order(new_route2_df, route2['bus_capacity'])
+
+                    new_distance1 = calculate_route_distance(optimized_route1)
+                    new_distance2 = calculate_route_distance(optimized_route2)
+
+                    total_original = original_distance1 + original_distance2
+                    total_new = new_distance1 + new_distance2
+
+                    # Si amélioration significative (au moins 2% de réduction)
+                    if total_new < total_original * 0.98:
+                        # Mettre à jour les routes
+                        routes[i]['route'] = optimized_route1
+                        routes[i]['capacity_used'] = new_capacity1
+                        routes[i]['distance'] = new_distance1
+
+                        routes[i + 1]['route'] = optimized_route2
+                        routes[i + 1]['capacity_used'] = new_capacity2
+                        routes[i + 1]['distance'] = new_distance2
+
+                        improved = True
+
+                        break  # Redémarrer après changement
+
+            if improved:
+                break
+
+            # Essayer de déplacer des stations de route2 vers route1
+            for station_idx in range(len(route2['route'])):
+                station = route2['route'].iloc[station_idx]
+
+                # Vérifier si le déplacement est bénéfique
+                original_distance1 = route1['distance']
+                original_distance2 = route2['distance']
+
+                # Créer nouvelle route2 sans la station
+                new_route2_df = route2['route'].drop(route2['route'].index[station_idx]).reset_index(drop=True)
+                new_capacity2 = route2['capacity_used'] - station['employees number']
+
+                # Créer nouvelle route1 avec la station ajoutée
+                new_route1_df = pd.concat([route1['route'], pd.DataFrame([station])], ignore_index=True)
+                new_capacity1 = route1['capacity_used'] + station['employees number']
+
+                # Vérifier contraintes de capacité VRP
+                if (new_capacity1 <= route1['bus_capacity'] and
+                    new_capacity2 <= route2['bus_capacity'] and
+                    new_capacity1 >= route1['bus_capacity'] * 0.5 and
+                    new_capacity2 >= route2['bus_capacity'] * 0.5):
+
+                    # Optimiser les deux routes
+                    optimized_route1 = optimize_cluster_order(new_route1_df, route1['bus_capacity'])
+                    optimized_route2 = optimize_cluster_order(new_route2_df, route2['bus_capacity'])
+
+                    new_distance1 = calculate_route_distance(optimized_route1)
+                    new_distance2 = calculate_route_distance(optimized_route2)
+
+                    total_original = original_distance1 + original_distance2
+                    total_new = new_distance1 + new_distance2
+
+                    # Si amélioration significative
+                    if total_new < total_original * 0.98:
+                        # Mettre à jour les routes
+                        routes[i]['route'] = optimized_route1
+                        routes[i]['capacity_used'] = new_capacity1
+                        routes[i]['distance'] = new_distance1
+
+                        routes[i + 1]['route'] = optimized_route2
+                        routes[i + 1]['capacity_used'] = new_capacity2
+                        routes[i + 1]['distance'] = new_distance2
+
+                        improved = True
+
+                        break  # Redémarrer après changement
+
+            if improved:
+                break
+
+    return routes
+
+def advanced_optimization(routes):
+    original_total_distance = sum(route['distance'] for route in routes)
+
+    # Étape 1: 2-opt intra-route seulement
+    for i, route in enumerate(routes):
+        optimized_route = two_opt_swap(route['route'], route['bus_capacity'])
+        routes[i]['route'] = optimized_route
+        routes[i]['distance'] = calculate_route_distance(optimized_route)
+
+    # Étape 2: Relocation entre routes (le plus utile)
+    routes = inter_route_relocation(routes, max_iterations=10)
+
+    new_total_distance = sum(route['distance'] for route in routes)
+    improvement = original_total_distance - new_total_distance
+
+
+
+    return routes
+
 def sweep_fixed_buses(data, available_buses):
     routes = []
     data_copy = data.copy()
     idx = 0
 
-    # First pass - original optimization (completely isolated)
+    # First pass - original optimization
     for bus_cap in available_buses:
         current_route = []
         current_capacity = 0
@@ -233,21 +374,19 @@ def sweep_fixed_buses(data, available_buses):
 
         if current_route:
             cluster_df = pd.DataFrame(current_route)
-            optimized = optimize_cluster_order(cluster_df)
+            optimized = optimize_cluster_order(cluster_df, bus_cap)
             routes.append({
                 'route': optimized,
                 'capacity_used': current_capacity,
                 'bus_capacity': bus_cap,
                 'distance': calculate_route_distance(optimized),
-                'default_speed': 40,  # Ajouter cette ligne
-                'default_service_time': 2  # Ajouter cette ligne
+                'default_speed': 40,
+                'default_service_time': 2
             })
 
-    # Second pass - completely independent re-optimization
+    # Second pass - handle remaining stations
     if idx < len(data_copy):
         remaining_stations = data_copy.iloc[idx:].copy()
-
-        # 1. Prepare fresh data for isolated optimization
         remaining_stations[['theta', 'distance']] = remaining_stations.apply(
             lambda row: polar_coordinates(row), axis=1)
         remaining_stations = remaining_stations.sort_values('theta')
@@ -257,25 +396,21 @@ def sweep_fixed_buses(data, available_buses):
             axis=1
         )
 
-        # 2. Calculate fresh bus requirements
         remaining_demand = remaining_stations['employees number'].sum()
         new_buses = []
-
-        # Calculate using same logic as initial optimization
         capacities = sorted(st.session_state.bus_capacities, reverse=True)
+
         for cap in capacities:
-            while remaining_demand >= cap * 0.7:  # Minimum 70% utilization
+            while remaining_demand >= cap * 0.7:
                 new_buses.append(cap)
                 remaining_demand -= cap
         if remaining_demand > 0:
             new_buses.append(min(st.session_state.bus_capacities))
 
-        # 3. Run completely independent optimization
         if new_buses:
             additional_routes = []
-
-            # Fresh sweep algorithm on remaining stations only
             reopt_idx = 0
+
             for bus_cap in new_buses:
                 current_route = []
                 current_capacity = 0
@@ -291,19 +426,74 @@ def sweep_fixed_buses(data, available_buses):
 
                 if current_route:
                     cluster_df = pd.DataFrame(current_route)
-                    optimized = optimize_cluster_order(cluster_df)
+                    optimized = optimize_cluster_order(cluster_df, bus_cap)
                     additional_routes.append({
                         'route': optimized,
                         'capacity_used': current_capacity,
                         'bus_capacity': bus_cap,
                         'distance': calculate_route_distance(optimized),
-                        'default_speed': 40,  # Ajouter cette ligne
-                        'default_service_time': 2  # Ajouter cette ligne
+                        'default_speed': 40,
+                        'default_service_time': 2
                     })
 
             routes.extend(additional_routes)
 
+    # Apply advanced 3-opt optimization (always enabled)
+    with st.spinner("Applying advanced 3-opt optimization..."):
+        routes = advanced_optimization(routes)
+
     return routes
+
+def multi_start_sweep_optimization(data, available_buses, num_restarts=5):
+    best_routes = None
+    best_distance = float('inf')
+
+    # Store original data before any rotation
+    original_data = data.copy()
+
+    # Create a status container to show progress
+    status_container = st.empty()
+
+    for i in range(num_restarts):
+        # Show progress without sidebar
+        if num_restarts > 1:
+            status_container.info(f"🚀 Running multi-start optimization: Variant {i+1}/{num_restarts}...")
+
+        # Vary the starting angle for each restart (key to diversity)
+        angle_offset = (i * 2 * math.pi) / num_restarts
+
+        # Create a rotated dataset - this creates different initial clusters
+        rotated_data = original_data.copy()
+        rotated_data['theta'] = (rotated_data['theta'] + angle_offset) % (2 * math.pi)
+        rotated_data = rotated_data.sort_values('theta').reset_index(drop=True)
+
+        # Run your existing optimization pipeline on this variant
+        try:
+            routes = sweep_fixed_buses(rotated_data, available_buses)
+            total_distance = sum(route['distance'] for route in routes)
+
+            # Update best solution if improved
+            if total_distance < best_distance:
+                best_distance = total_distance
+                best_routes = routes
+                if num_restarts > 1:
+                    st.success(f"✓ Multi-Start: New best solution found in variant {i+1} ({total_distance:.2f} km)")
+
+        except Exception as e:
+            # If any variant fails, continue with others
+            continue
+
+    # Clear status container
+    status_container.empty()
+
+    if best_routes is not None:
+        if num_restarts > 1:
+            st.success(f"Multi-Start complete! Best distance: {best_distance:.2f} km")
+    else:
+        # Fallback to single run if all restarts fail
+        best_routes = sweep_fixed_buses(original_data, available_buses)
+
+    return best_routes
 
 def clean_data(data):
 
@@ -829,9 +1019,9 @@ if station_file:
 
         # Perform optimization if needed
         if st.session_state.optimized and not st.session_state.manual_override:
-           with st.spinner("Processing routes..."):
+            with st.spinner("Processing routes..."):
                 available_buses = compute_required_buses(data_sorted['employees number'], st.session_state.bus_capacities)
-                routes = sweep_fixed_buses(data_sorted, available_buses)
+                routes = sweep_fixed_buses(data_sorted, available_buses)  # ← REPLACE THIS LINE
                 st.session_state.routes = routes
 
         # Results analysis
@@ -1130,6 +1320,7 @@ from pyngrok import ngrok
 ngrok.set_auth_token("2y9Tc8cZWp1rkE3zBWnsvWAotQh_3xDPfMyFW2dbHYwFymsaE")
 
 
+
 # Start ngrok tunnel
 import time
 time.sleep(8)
@@ -1142,7 +1333,7 @@ except Exception as e:
     print("\n❌ Failed to create Ngrok tunnel. Error:", str(e))
     print("\nTroubleshooting steps:")
     print("1. Check Streamlit logs:")
-  
+   
     print("\n2. Try these commands manually:")
     print("!streamlit run bus_optimizer.py --server.port 8501")
     print("!ngrok http 8501")
